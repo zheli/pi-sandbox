@@ -61,7 +61,7 @@ import {
   extractDomainsFromCommand,
 } from "./src/domains.ts";
 import { extractBlockedWritePath } from "./src/output.ts";
-import { canonicalizePath, isReadDenied, matchesPattern, shouldPromptForWrite } from "./src/paths.ts";
+import { canonicalizePath, isReadDenied, matchesPattern, resolveReadToolPath, resolveToolPath, shouldPromptForWrite } from "./src/paths.ts";
 import {
   type PromptAction,
   type ProjectSituation,
@@ -413,7 +413,7 @@ export default function (pi: ExtensionAPI): void {
     }
 
     if (isToolCallEventType("read", event)) {
-      const filePath = canonicalizePath(event.input.path, home);
+      const filePath = canonicalizePath(resolveReadToolPath(event.input.path, localCwd, home), home);
       const allowRead = effective.filesystem?.allowRead ?? [];
       const denyRead = effective.filesystem?.denyRead ?? [];
       if (isReadDenied(filePath, denyRead, allowRead, home)) {
@@ -434,7 +434,7 @@ export default function (pi: ExtensionAPI): void {
 
     // Write/edit — denyWrite is hard-blocked; otherwise prompt if not in allowWrite.
     if (isToolCallEventType("write", event) || isToolCallEventType("edit", event)) {
-      const path = canonicalizePath((event.input as { path: string }).path, home);
+      const path = canonicalizePath(resolveToolPath((event.input as { path: string }).path, localCwd, home), home);
       const allowWrite = effective.filesystem?.allowWrite ?? [];
       const denyWrite = effective.filesystem?.denyWrite ?? [];
 
