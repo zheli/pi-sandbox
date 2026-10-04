@@ -40,6 +40,25 @@ export function canonicalizePath(filePath: string, home: string = homedir()): st
   }
 }
 
+export function resolveToolPath(filePath: string, cwd: string, home: string = homedir()): string {
+  const normalized = filePath.replace(/^@/, "").replace(/[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g, " ");
+  return resolve(cwd, normalized.replace(/^~(?=$|\/)/, home));
+}
+
+// Match Pi's filename fallbacks so the gate checks the file its read tool opens.
+export function resolveReadToolPath(filePath: string, cwd: string, home: string = homedir()): string {
+  const resolved = resolveToolPath(filePath, cwd, home);
+  const nfd = resolved.normalize("NFD");
+  const candidates = [
+    resolved,
+    resolved.replace(/ (AM|PM)\./gi, "\u202F$1."),
+    nfd,
+    resolved.replace(/'/g, "\u2019"),
+    nfd.replace(/'/g, "\u2019"),
+  ];
+  return candidates.find((candidate) => existsSync(candidate)) ?? resolved;
+}
+
 /**
  * Match a path against a list of patterns.
  *
