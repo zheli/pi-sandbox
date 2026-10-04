@@ -4,7 +4,7 @@ import * as os from "node:os";
 import { join } from "node:path";
 
 import { SandboxManager } from "@anthropic-ai/sandbox-runtime";
-import { SettingsManager, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, type ExtensionHandler, type SessionStartEvent, type ToolCallEvent, type ToolCallEventResult, type ToolDefinition, type UserBashEvent, type UserBashEventResult } from "@earendil-works/pi-coding-agent";
+import { createReadToolDefinition, SettingsManager, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, type ExtensionHandler, type SessionStartEvent, type ToolCallEvent, type ToolCallEventResult, type ToolDefinition, type UserBashEvent, type UserBashEventResult } from "@earendil-works/pi-coding-agent";
 
 import extension from "../index.ts";
 import { BUILTIN_DEFAULT_CONFIG, type SandboxConfig, writeDefault } from "../src/config.ts";
@@ -127,6 +127,30 @@ describe("native read credential protection", () => {
     await start({ type: "session_start" }, ctx);
     expect(await read("~/.pi/agent/skills/example/SKILL.md")).toBeUndefined();
   });
+
+  test("allows Pi resources through the @ prefix alias", async () => {
+    await start({ type: "session_start" }, ctx);
+    expect(await read("@~/.pi/agent/skills/example/SKILL.md")).toBeUndefined();
+  });
+
+  for (const { input, target } of [
+    { input: "Screenshot 1 PM.txt", target: "Screenshot 1\u202FPM.txt" },
+    { input: "caf\u00e9.txt", target: "cafe\u0301.txt" },
+    { input: "user's.txt", target: "user\u2019s.txt" },
+    { input: "caf\u00e9's.txt", target: "cafe\u0301\u2019s.txt" },
+    { input: "secret\u00a0file.txt", target: "secret file.txt" },
+  ]) {
+    test(`denies the same synthetic file Pi reads for ${JSON.stringify(input)}`, async () => {
+      const targetPath = join(workspace, target);
+      const inputPath = join(workspace, input);
+      writeFileSync(targetPath, "synthetic filename fixture");
+      saveConfig({ filesystem: { ...BUILTIN_DEFAULT_CONFIG.filesystem, allowRead: [workspace], denyRead: [targetPath] } });
+      await start({ type: "session_start" }, ctx);
+      const nativeResult = await createReadToolDefinition(workspace).execute("native-read", { path: inputPath }, undefined, undefined, ctx);
+      expect(nativeResult.content.some((part) => part.type === "text" && part.text.includes("synthetic filename fixture"))).toBe(true);
+      expect((await read(inputPath))?.block).toBe(true);
+    });
+  }
 
   test("allows workspace files under a broadly denied home", async () => {
     await start({ type: "session_start" }, ctx);
