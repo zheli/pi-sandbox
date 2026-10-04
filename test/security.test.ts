@@ -76,7 +76,7 @@ function saveConfig(overrides: Partial<SandboxConfig> = {}): void {
     filesystem: {
       ...BUILTIN_DEFAULT_CONFIG.filesystem,
       denyRead: [home, "~/.pi/agent/auth.json", "~/.pi/agent/mcp-oauth"],
-      allowRead: [workspace, "~/.pi"],
+      allowRead: [workspace, process.cwd(), "~/.pi"],
       allowWrite: [workspace],
     },
     ...overrides,
@@ -111,6 +111,16 @@ describe("native read credential protection", () => {
     symlinkSync(join(home, ".pi", "agent", "auth.json"), join(workspace, "linked-auth"));
     await start({ type: "session_start" }, ctx);
     expect((await read(join(workspace, "linked-auth")))?.block).toBe(true);
+  });
+
+  test("blocks Pi's @ prefix alias to auth.json", async () => {
+    await start({ type: "session_start" }, ctx);
+    expect((await read("@~/.pi/agent/auth.json"))?.block).toBe(true);
+  });
+
+  test("blocks Pi's @ prefix alias to an absolute OAuth path", async () => {
+    await start({ type: "session_start" }, ctx);
+    expect((await read(`@${join(home, ".pi", "agent", "mcp-oauth", "fixture.json")}`))?.block).toBe(true);
   });
 
   test("allows ordinary Pi resources under a broadly denied home", async () => {
@@ -205,7 +215,8 @@ describe("sandbox failures block execution", () => {
     await start({ type: "session_start" }, ctx);
     initialize.mockRejectedValue(new Error("restart failed"));
     const custom = async () => ({ kind: "session" });
-    const result = await toolCall({ type: "tool_call", toolName: "read", toolCallId: "outside", input: { path: join(home, "outside-workspace") } }, { ...ctx, hasUI: true, ui: { ...ctx.ui, custom } } as ExtensionContext);
+    const result = await toolCall({ type: "tool_call", toolName: "read", toolCallId: "outside", input: { path: join(home, "..", "outside-workspace") } }, { ...ctx, hasUI: true, ui: { ...ctx.ui, custom } } as ExtensionContext);
+    expect(initialize).toHaveBeenCalledTimes(2);
     expect(result?.block).toBe(true);
   });
 
