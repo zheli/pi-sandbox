@@ -50,6 +50,7 @@ import {
   readProjects,
   resolveProjectAppendKey,
   seedNewProjectEntry,
+  validateConfig,
   writeDefault,
   writeProjects,
 } from "./src/config.ts";
@@ -60,7 +61,7 @@ import {
   extractDomainsFromCommand,
 } from "./src/domains.ts";
 import { extractBlockedWritePath } from "./src/output.ts";
-import { canonicalizePath, matchesPattern, shouldPromptForWrite } from "./src/paths.ts";
+import { canonicalizePath, isReadDenied, matchesPattern, shouldPromptForWrite } from "./src/paths.ts";
 import {
   type PromptAction,
   type ProjectSituation,
@@ -96,9 +97,11 @@ export default function (pi: ExtensionAPI): void {
   // ── shared mutable state ────────────────────────────────────────────────────
 
   const flags = {
-    enabled: { value: false },
+    enabled: { value: true },
     initialized: { value: false },
   };
+
+  const unavailableReason = "Sandbox unavailable: tools are blocked. Use /sandbox to repair the config or explicitly disable protection.";
 
   const session = {
     domains: [] as string[],
@@ -203,16 +206,27 @@ export default function (pi: ExtensionAPI): void {
   // ── (re)initialize sandbox ─────────────────────────────────────────────────
 
   async function initSandbox(cwd: string, ctx?: ExtensionContext): Promise<boolean> {
+    flags.enabled.value = true;
+    flags.initialized.value = false;
+    try {
     if (!isSupportedPlatform()) {
       ctx?.ui.notify(`Sandbox not supported on ${process.platform}`, "warning");
       return false;
     }
     const { effective } = loadEffective(cwd);
+    if (effective.enabled === false) {
+      await fullDisable(ctx);
+      return false;
+    }
     if (!effective.network || !effective.filesystem) {
       ctx?.ui.notify("Sandbox config is incomplete (missing network or filesystem). Use /sandbox-configure.", "warning");
       return false;
     }
-    try {
+      const validation = validateConfig(effective);
+      if (!validation.ok) {
+        ctx?.ui.notify(`Sandbox config is invalid: ${validation.error}`, "error");
+        return false;
+      }
       await SandboxManager.initialize(
         {
           network: effective.network,
@@ -274,17 +288,18 @@ export default function (pi: ExtensionAPI): void {
    * TUI buffer, so we route through `ctx.ui.notify` instead).
    */
   async function reinitialize(cwd: string, ctx?: ExtensionContext): Promise<void> {
-    if (!flags.initialized.value) return;
+    if (!flags.enabled.value) return;
+    flags.initialized.value = false;
     try {
       await SandboxManager.reset();
-      flags.initialized.value = false;
-      flags.enabled.value = false;
       await initSandbox(cwd, ctx);
     } catch (e) {
       ctx?.ui.notify(
         `Sandbox reinitialize failed: ${e instanceof Error ? e.message : e}`,
         "error",
       );
+    } finally {
+      if (ctx) updateStatus(ctx);
     }
   }
 
@@ -295,6 +310,10 @@ export default function (pi: ExtensionAPI): void {
    */
   function updateStatus(ctx: ExtensionContext): void {
     if (flags.enabled.value) {
+      if (!flags.initialized.value) {
+        ctx.ui.setStatus("sandbox", ctx.ui.theme.fg("error", "Sandbox: unavailable (tools blocked)"));
+        return;
+      }
       const { effective } = loadEffective(ctx.cwd);
       ctx.ui.setStatus("sandbox", ctx.ui.theme.fg("accent", renderStatus(effective)));
       return;
@@ -339,6 +358,7 @@ export default function (pi: ExtensionAPI): void {
     const action = await showPermissionPrompt(ctx, title, options);
     if (action.kind === "abort") return "blocked";
     await applyChoice(action, kind, value, ctx.cwd, ctx);
+    if (flags.enabled.value && !flags.initialized.value) return "blocked";
     return "allowed";
   }
 
@@ -347,6 +367,7 @@ export default function (pi: ExtensionAPI): void {
   pi.on("session_start", async (_event, ctx) => {
     const noSandbox = pi.getFlag("no-sandbox") as boolean;
     if (noSandbox) {
+      await fullDisable();
       ctx.ui.notify("Sandbox disabled via --no-sandbox", "warning");
       updateStatus(ctx);
       return;
@@ -357,6 +378,7 @@ export default function (pi: ExtensionAPI): void {
 
     const { base } = loadEffective(ctx.cwd);
     if (base.enabled === false) {
+      await fullDisable();
       ctx.ui.notify("Sandbox disabled via config (enabled: false)", "info");
       updateStatus(ctx);
       return;
@@ -367,25 +389,15 @@ export default function (pi: ExtensionAPI): void {
   });
 
   pi.on("session_shutdown", async () => {
-    if (flags.initialized.value) {
-      try {
-        await SandboxManager.reset();
-      } catch {
-        // best-effort
-      }
-      flags.initialized.value = false;
-      flags.enabled.value = false;
-      teardownHandle?.detach();
-      teardownHandle = null;
-    }
+    await fullDisable();
   });
 
   // ── tool_call hook ─────────────────────────────────────────────────────────
 
   pi.on("tool_call", async (event, ctx) => {
     if (!flags.enabled.value) return;
-    const { base, effective } = loadEffective(ctx.cwd);
-    if (base.enabled === false) return;
+    if (!flags.initialized.value) return { block: true, reason: unavailableReason };
+    const { effective } = loadEffective(ctx.cwd);
 
     // Network pre-check for bash
     if (flags.initialized.value && isToolCallEventType("bash", event)) {
@@ -413,6 +425,10 @@ export default function (pi: ExtensionAPI): void {
     if (isToolCallEventType("read", event)) {
       const filePath = canonicalizePath(event.input.path, home);
       const allowRead = effective.filesystem?.allowRead ?? [];
+      const denyRead = effective.filesystem?.denyRead ?? [];
+      if (isReadDenied(filePath, denyRead, allowRead, home)) {
+        return { block: true, reason: `Sandbox: read access denied for "${filePath}" (in denyRead).` };
+      }
       if (!matchesPattern(filePath, allowRead, home)) {
         const status = await promptAndApply(
           ctx,
@@ -459,7 +475,12 @@ export default function (pi: ExtensionAPI): void {
   // ── user_bash (network pre-check for !cmd) ─────────────────────────────────
 
   pi.on("user_bash", async (event, ctx) => {
-    if (!flags.enabled.value || !flags.initialized.value) return;
+    if (!flags.enabled.value) return;
+    if (!flags.initialized.value) {
+      return {
+        result: { output: unavailableReason, exitCode: 1, cancelled: false, truncated: false },
+      };
+    }
     const { effective } = loadEffective(ctx.cwd);
     const domains = extractDomainsFromCommand(event.command);
     const allowed = effective.network?.allowedDomains ?? [];
@@ -493,9 +514,10 @@ export default function (pi: ExtensionAPI): void {
     label: "bash (sandboxed)",
     async execute(id, params, signal, onUpdate, ctx) {
       const runBash = (): Promise<AgentToolResult<any>> => {
-        if (!flags.enabled.value || !flags.initialized.value) {
+        if (!flags.enabled.value) {
           return localBash.execute(id, params, signal, onUpdate, ctx);
         }
+        if (!flags.initialized.value) throw new Error(unavailableReason);
         const sandboxedBash = createBashToolDefinition(localCwd, {
           operations: createSandboxedBashOps(userShellPath),
           shellPath: userShellPath,
@@ -603,8 +625,8 @@ export default function (pi: ExtensionAPI): void {
           ctx.ui.notify("Sandbox disabled", "info");
         } else {
           const ok = await initSandbox(ctx.cwd, ctx);
+          updateStatus(ctx);
           if (ok) {
-            updateStatus(ctx);
             ctx.ui.notify("Sandbox enabled", "info");
           }
         }
@@ -612,7 +634,7 @@ export default function (pi: ExtensionAPI): void {
       }
 
       // Editor flow (or cancelled). Re-apply config so any edits take effect.
-      if (flags.initialized.value) await reinitialize(ctx.cwd, ctx);
+      if (flags.enabled.value) await reinitialize(ctx.cwd, ctx);
       updateStatus(ctx);
     },
   });
