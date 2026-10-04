@@ -12,7 +12,7 @@ import { BUILTIN_DEFAULT_CONFIG, type SandboxConfig, writeDefault } from "../src
 let home: string;
 let workspace: string;
 let ctx: ExtensionContext;
-let start: ExtensionHandler<SessionStartEvent>;
+let startHandler: ExtensionHandler<SessionStartEvent>;
 let shutdown: () => Promise<void>;
 let toolCall: ExtensionHandler<ToolCallEvent, ToolCallEventResult>;
 let userBash: ExtensionHandler<UserBashEvent, UserBashEventResult>;
@@ -44,12 +44,12 @@ beforeEach(() => {
     setStatus(_key: string, value: string) { status = value; },
     theme: { fg(_color: string, value: string) { return value; } },
   };
-  ctx = { cwd: workspace, hasUI: false, ui } as ExtensionContext;
+  ctx = { cwd: workspace, hasUI: false, ui } as unknown as ExtensionContext;
   const api = {
     registerFlag() {},
     getFlag() { return noSandbox; },
     on(event: string, handler: unknown) {
-      if (event === "session_start") start = handler as typeof start;
+      if (event === "session_start") startHandler = handler as typeof startHandler;
       if (event === "session_shutdown") shutdown = handler as typeof shutdown;
       if (event === "tool_call") toolCall = handler as typeof toolCall;
       if (event === "user_bash") userBash = handler as typeof userBash;
@@ -57,7 +57,7 @@ beforeEach(() => {
     registerTool(tool: ToolDefinition) { bash = tool; },
     registerCommand(_name: string, definition: { handler: typeof command }) { command = definition.handler; },
   };
-  extension(api as ExtensionAPI);
+  extension(api as unknown as ExtensionAPI);
   saveConfig();
 });
 
@@ -87,9 +87,13 @@ async function read(path: string): Promise<ToolCallEventResult | void> {
   return toolCall({ type: "tool_call", toolName: "read", toolCallId: "read-fixture", input: { path } }, ctx);
 }
 
+function start(event: Pick<SessionStartEvent, "type">, context: ExtensionContext): Promise<void> | void {
+  return startHandler({ ...event, reason: "startup" }, context);
+}
+
 async function toggle(): Promise<void> {
   const custom = async () => ({ kind: "lead-action", id: "toggle" });
-  await command("", { ...ctx, hasUI: true, ui: { ...ctx.ui, custom } } as ExtensionCommandContext);
+  await command("", { ...ctx, hasUI: true, ui: { ...ctx.ui, custom } } as unknown as ExtensionCommandContext);
 }
 
 describe("native read credential protection", () => {
@@ -185,7 +189,7 @@ describe("sandbox failures block execution", () => {
   test("failed reinitialization keeps tools blocked", async () => {
     await start({ type: "session_start" }, ctx);
     initialize.mockRejectedValue(new Error("restart failed"));
-    await command("", { ...ctx, ui: { ...ctx.ui, custom: async () => null } } as ExtensionCommandContext);
+    await command("", { ...ctx, ui: { ...ctx.ui, custom: async () => null } } as unknown as ExtensionCommandContext);
     expect((await read(join(workspace, "file")))?.block).toBe(true);
     expect(status).toContain("blocked");
   });
@@ -193,7 +197,7 @@ describe("sandbox failures block execution", () => {
   test("failed reset during reinitialization keeps tools blocked", async () => {
     await start({ type: "session_start" }, ctx);
     reset.mockRejectedValue(new Error("reset failed"));
-    await command("", { ...ctx, ui: { ...ctx.ui, custom: async () => null } } as ExtensionCommandContext);
+    await command("", { ...ctx, ui: { ...ctx.ui, custom: async () => null } } as unknown as ExtensionCommandContext);
     expect((await read(join(workspace, "file")))?.block).toBe(true);
   });
 
