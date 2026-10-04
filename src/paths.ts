@@ -78,6 +78,26 @@ export function shouldPromptForWrite(
   return allowWrite.length === 0 || !matchesPattern(path, allowWrite, home);
 }
 
+export function isReadDenied(
+  path: string,
+  denyRead: string[],
+  allowRead: string[],
+  home: string = homedir(),
+): boolean {
+  return denyRead.some((deny) => {
+    if (!matchesPattern(path, [deny], home)) return false;
+    if (deny.includes("*")) return true;
+    const deniedPath = canonicalizePath(deny, home);
+    return !allowRead.some((allow) => {
+      if (allow.includes("*")) return false;
+      const allowedPath = canonicalizePath(allow, home);
+      return allowedPath !== deniedPath
+        && matchesPattern(allowedPath, [deniedPath], home)
+        && matchesPattern(path, [allowedPath], home);
+    });
+  });
+}
+
 /**
  * Find the longest absolute path key in `keys` that is a prefix of `cwd`.
  * Returns null if none match. Used for project-config longest-prefix lookup.
