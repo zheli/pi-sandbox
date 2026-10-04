@@ -239,4 +239,22 @@ describe("sandbox failures block execution", () => {
     await start({ type: "session_start" }, ctx);
     expect(await read("~/.pi/agent/auth.json")).toBeUndefined();
   });
+
+  test("the user can enable protection over a disabled startup config", async () => {
+    saveConfig({ enabled: false });
+    await start({ type: "session_start" }, ctx);
+    await toggle();
+    expect((await read("~/.pi/agent/auth.json"))?.block).toBe(true);
+    expect(status).not.toContain("disabled");
+  });
+
+  test("repairing the runtime recovers from failed initialization", async () => {
+    initialize.mockRejectedValue(new Error("runtime unavailable"));
+    await start({ type: "session_start" }, ctx);
+    initialize.mockResolvedValue(undefined);
+    await command("", { ...ctx, ui: { ...ctx.ui, custom: async () => null } } as unknown as ExtensionCommandContext);
+    expect(await read(join(workspace, "source.ts"))).toBeUndefined();
+    expect((await read("~/.pi/agent/auth.json"))?.block).toBe(true);
+    expect(status).not.toContain("blocked");
+  });
 });
