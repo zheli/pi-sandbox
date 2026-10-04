@@ -214,10 +214,6 @@ export default function (pi: ExtensionAPI): void {
         return false;
       }
       const { effective } = loadEffective(cwd);
-      if (effective.enabled === false) {
-        await fullDisable(ctx);
-        return false;
-      }
       if (!effective.network || !effective.filesystem) {
         ctx?.ui.notify("Sandbox config is incomplete (missing network or filesystem). Use /sandbox-configure.", "warning");
         return false;
