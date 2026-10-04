@@ -209,19 +209,19 @@ export default function (pi: ExtensionAPI): void {
     flags.enabled.value = true;
     flags.initialized.value = false;
     try {
-    if (!isSupportedPlatform()) {
-      ctx?.ui.notify(`Sandbox not supported on ${process.platform}`, "warning");
-      return false;
-    }
-    const { effective } = loadEffective(cwd);
-    if (effective.enabled === false) {
-      await fullDisable(ctx);
-      return false;
-    }
-    if (!effective.network || !effective.filesystem) {
-      ctx?.ui.notify("Sandbox config is incomplete (missing network or filesystem). Use /sandbox-configure.", "warning");
-      return false;
-    }
+      if (!isSupportedPlatform()) {
+        ctx?.ui.notify(`Sandbox not supported on ${process.platform}`, "warning");
+        return false;
+      }
+      const { effective } = loadEffective(cwd);
+      if (effective.enabled === false) {
+        await fullDisable(ctx);
+        return false;
+      }
+      if (!effective.network || !effective.filesystem) {
+        ctx?.ui.notify("Sandbox config is incomplete (missing network or filesystem). Use /sandbox-configure.", "warning");
+        return false;
+      }
       const validation = validateConfig(effective);
       if (!validation.ok) {
         ctx?.ui.notify(`Sandbox config is invalid: ${validation.error}`, "error");
@@ -303,11 +303,6 @@ export default function (pi: ExtensionAPI): void {
     }
   }
 
-  /**
-   * Set the footer status line based on current `flags.enabled`. When enabled,
-   * shows the accent-coloured `🔒 Sandbox: N domains, M write paths`. When
-   * disabled, shows `Sandbox: disabled` with `disabled` in red.
-   */
   function updateStatus(ctx: ExtensionContext): void {
     if (flags.enabled.value) {
       if (!flags.initialized.value) {
@@ -421,7 +416,6 @@ export default function (pi: ExtensionAPI): void {
       }
     }
 
-    // Read tool — every read is prompted unless already in allowRead.
     if (isToolCallEventType("read", event)) {
       const filePath = canonicalizePath(event.input.path, home);
       const allowRead = effective.filesystem?.allowRead ?? [];
